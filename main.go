@@ -1,103 +1,99 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
-	"log"
-	"net/http"
-	"os"
-
-	"github.com/gorilla/mux"
-	"github.com/joho/godotenv"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+    "encoding/json"
+    "log"
+    "net/http"
+    "math/rand"
+    "strconv"
+    "github.com/gorilla/mux"
 )
 
-type Article struct {
-	Id      string `json:"Id"`
-	Title   string `json:"Title"`
-	Desc    string `json:"desc"`
-	Content string `json:"content"`
+type Book struct {
+    ID    string  `json:"id"`
+    Isbn  string  `json:"isbn"`
+    Title string  `json:"title"`
+    Author *Author `json:"author"`
 }
 
-var Articles *mongo.Collection
-
-func homePage(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Welcome to the HomePage!")
-	fmt.Println("Endpoint Hit: homePage")
+type Author struct {
+    Firstname string `json:"firstname"`
+    Lastname  string `json:"lastname"`
 }
 
-func returnAllArticles(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Endpoint Hit: returnAllArticles")
-	json.NewEncoder(w).Encode(Articles)
+var books []Book
+
+func getBooks(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(books)
 }
 
-func returnSingleArticle(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	key := vars["id"]
+func getBook(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    params := mux.Vars(r)
 
-	Articles.FindOne(context.Background(), key)
+    for _, item := range books {
+        if item.ID == params["id"] {
+            json.NewEncoder(w).Encode(item)
+            return
+        }
+    }
+
+    json.NewEncoder(w).Encode(&Book{})
 }
 
-func createNewArticle(w http.ResponseWriter, r *http.Request) {
-	reqBody, _ := ioutil.ReadAll(r.Body)
-	var article Article
-	json.Unmarshal(reqBody, &article)
-	Articles.InsertOne(context.Background(), article)
-	json.NewEncoder(w).Encode(article)
+func createBook(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    var book Book
+    _ = json.NewDecoder(r.Body).Decode(&book)
+    book.ID = strconv.Itoa(rand.Intn(1000000)) // unsafe id
+    books = append(books, book)
+    json.NewEncoder(w).Encode(book)
 }
 
-func updateArticle(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
+func updateBook(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    params := mux.Vars(r)
 
-	reqBody, _ := ioutil.ReadAll(r.Body)
-	var updatedArticle Article
-	json.Unmarshal(reqBody, &updatedArticle)
-	log.Println(updatedArticle)
-	Articles.UpdateOne(context.Background(), id, updatedArticle)
+    for index, item := range books {
+        if item.ID == params["id"] {
+            books = append(books[:index], books[index+1:]...)
+            var book Book
+            _ = json.NewDecoder(r.Body).Decode(&book)
+            book.ID = params["id"]
+            books = append(books, book)
+            json.NewEncoder(w).Encode(book)
+            return
+        }
+    }
 
-	json.NewEncoder(w).Encode(updatedArticle)
+    json.NewEncoder(w).Encode(books)
 }
 
-func deleteArticle(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
+func deleteBook(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    params := mux.Vars(r)
 
-	Articles.DeleteOne(context.Background(), id)
-}
+    for index, item := range books {
+        if item.ID == params["id"] {
+            books = append(books[:index], books[index+1:]...)
+            break
+        }
+    }
 
-func handleRequests() {
-	myRouter := mux.NewRouter().StrictSlash(true)
-	myRouter.HandleFunc("/", homePage)
-	myRouter.HandleFunc("/articles", returnAllArticles)
-	myRouter.HandleFunc("/article", createNewArticle).Methods("POST")
-	myRouter.HandleFunc("/article/{id}", deleteArticle).Methods("DELETE")
-	myRouter.HandleFunc("/article/{id}", updateArticle).Methods("PATCH")
-	myRouter.HandleFunc("/article/{id}", returnSingleArticle)
-	log.Fatal(http.ListenAndServe(":10000", myRouter))
+    json.NewEncoder(w).Encode(books)
 }
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found")
-	}
-	uri := os.Getenv("MONGODB_URI")
-	if uri == "" {
-		log.Fatal("Set your 'MONGODB_URI' environment variable")
-	}
-	client, err := mongo.Connect(context.TODO(), options.Client().
-		ApplyURI(uri))
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		if err := client.Disconnect(context.TODO()); err != nil {
-			panic(err)
-		}
-	}()
-	Articles = client.Database("go-mongo").Collection("articles")
-	handleRequests()
+    router := mux.NewRouter()
+
+    books = append(books, Book{ID: "1", Isbn: "446841", Title: "Book", Author: &Author{Firstname: "John", Lastname: "Doe"}})
+
+    router.HandleFunc("/api/books", getBooks).Methods("GET")
+    router.HandleFunc("/api/books/{id}", getBook).Methods("GET")
+    router.HandleFunc("/api/books", createBook).Methods("POST")
+    router.HandleFunc("/api/books/{id}", updateBook).Methods("PUT")
+    router.HandleFunc("/api/books/{id}", deleteBook).Methods("DELETE")
+
+    log.Fatal(http.ListenAndServe(":3000", router))
 }

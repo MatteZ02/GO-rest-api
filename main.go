@@ -2,102 +2,222 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 
-	"github.com/gorilla/mux"
+	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type Article struct {
-	Id      string `json:"Id"`
-	Title   string `json:"Title"`
-	Desc    string `json:"desc"`
-	Content string `json:"content"`
+type Item struct {
+	ID          primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
+	Title       string             `json:"title,omitempty" bson:"title,omitempty"`
+	Description string             `json:"description,omitempty" bson:"description,omitempty"`
+	Price       string             `json:"price,omitempty" bson:"price,omitempty"`
+	CreatedAt   string             `json:"createdAt,omitempty" bson:"createdAt,omitempty"`
+	Category    string           `json:"category,omitempty" bson:"category,omitempty"`
 }
 
-var Articles *mongo.Collection
-
-func homePage(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Welcome to the HomePage!")
-	fmt.Println("Endpoint Hit: homePage")
-}
-
-func returnAllArticles(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Endpoint Hit: returnAllArticles")
-	json.NewEncoder(w).Encode(Articles)
-}
-
-func returnSingleArticle(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	key := vars["id"]
-
-	Articles.FindOne(context.Background(), key)
-}
-
-func createNewArticle(w http.ResponseWriter, r *http.Request) {
-	reqBody, _ := ioutil.ReadAll(r.Body)
-	var article Article
-	json.Unmarshal(reqBody, &article)
-	Articles.InsertOne(context.Background(), article)
-	json.NewEncoder(w).Encode(article)
-}
-
-func updateArticle(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	reqBody, _ := ioutil.ReadAll(r.Body)
-	var updatedArticle Article
-	json.Unmarshal(reqBody, &updatedArticle)
-	log.Println(updatedArticle)
-	Articles.UpdateOne(context.Background(), id, updatedArticle)
-
-	json.NewEncoder(w).Encode(updatedArticle)
-}
-
-func deleteArticle(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	Articles.DeleteOne(context.Background(), id)
-}
-
-func handleRequests() {
-	myRouter := mux.NewRouter().StrictSlash(true)
-	myRouter.HandleFunc("/", homePage)
-	myRouter.HandleFunc("/articles", returnAllArticles)
-	myRouter.HandleFunc("/article", createNewArticle).Methods("POST")
-	myRouter.HandleFunc("/article/{id}", deleteArticle).Methods("DELETE")
-	myRouter.HandleFunc("/article/{id}", updateArticle).Methods("PATCH")
-	myRouter.HandleFunc("/article/{id}", returnSingleArticle)
-	log.Fatal(http.ListenAndServe(":10000", myRouter))
-}
+var Items *mongo.Collection
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found")
-	}
-	uri := os.Getenv("MONGODB_URI")
-	if uri == "" {
-		log.Fatal("Set your 'MONGODB_URI' environment variable")
-	}
-	client, err := mongo.Connect(context.TODO(), options.Client().
-		ApplyURI(uri))
+	err := godotenv.Load(".env")
 	if err != nil {
-		panic(err)
+		log.Fatal("Error loading .env file")
 	}
-	defer func() {
-		if err := client.Disconnect(context.TODO()); err != nil {
-			panic(err)
+
+	MOGNODB_URI := os.Getenv("MONGODB_URI")
+	clientOptions := options.Client().ApplyURI(MOGNODB_URI)
+	client, err := mongo.Connect(context.Background(), clientOptions)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Disconnect(context.Background())
+
+	err = client.Ping(context.Background(), nil)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("Connected to MongoDB!")
+
+	Items = client.Database("todos").Collection("todos")
+
+	app := fiber.New()
+
+	app.Get("/api/todos", getItems)
+	app.Post("api/todos", createItem)
+	app.Get("api/todos/:id", getItem)
+	app.Patch("api/todos/:id", updateItem)
+	app.Delete("api/todos/:id", deleteTodo)
+
+	PORT := os.Getenv("PORT")
+	if PORT == "" {
+		PORT = "3000"
+	}
+
+	log.Fatal(app.Listen(PORT))
+}
+
+func getItems(c *fiber.Ctx) error {
+	var items []Item
+
+	sortBy := c.Query("sortBy")
+	if sortBy == "" {
+		sortBy = "createdAt"
+	}
+	sortOrder := c.Query("sortOrder")
+	if sortOrder == "" {
+		sortOrder = "desc"
+	}
+	category := c.Query("category")
+
+	filter := bson.M{}
+
+	if category != "" {
+		filter = bson.M{"category.name": category}
+	}
+
+	options := options.Find()
+	options.SetSort(bson.D{{Key: sortBy, Value: sortOrder}})
+
+	cursor, err := Items.Find(context.Background(), filter, options)
+	if err != nil {
+		return err
+	}
+
+	defer cursor.Close(context.Background())
+
+	for cursor.Next(context.Background()) {
+		var item Item
+		if err := cursor.Decode(&item); err != nil {
+			return err
 		}
-	}()
-	Articles = client.Database("go-mongo").Collection("articles")
-	handleRequests()
+		items = append(items, item)
+	}
+
+	return c.JSON(items)
+}
+
+func getItem(c *fiber.Ctx) error {
+	id := c.Params("id")
+	objectID, err := primitive.ObjectIDFromHex(id)
+
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid ID"})
+	}
+
+	cursor := Items.FindOne(context.Background(), bson.M{"_id": objectID})
+
+	item := &Item{}
+	if err := cursor.Decode(item); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Error fetching item"})
+	}
+
+	return c.JSON(item)
+}
+
+func createItem(c *fiber.Ctx) error {
+	item := new(Item)
+
+	if err := c.BodyParser(item); err != nil {
+		return err
+	}
+
+	if item.Title == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Title is required"})
+	}
+	if item.Description == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Description is required"})
+	}
+	if item.Price == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Price is required"})
+	}
+	if item.Category == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Category is required"})
+	}
+
+	insertResult, err := Items.InsertOne(context.Background(), item)
+
+	if err != nil {
+		return err
+	}
+
+	item.ID = insertResult.InsertedID.(primitive.ObjectID)
+
+	return c.Status(201).JSON(item)
+}
+
+func updateItem(c *fiber.Ctx) error {
+	id := c.Params("id")
+	objectID, err := primitive.ObjectIDFromHex(id)
+	newItem := new(Item)
+
+	if err := c.BodyParser(newItem); err != nil {
+		return err
+	}
+
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid ID"})
+	}
+
+	cursor := Items.FindOne(context.Background(), bson.M{"_id": objectID})
+
+	item := &Item{}
+	if err := cursor.Decode(item); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Error fetching item"})
+	}
+
+	if (newItem.Title == "") && (newItem.Description == "") && (newItem.Price == "") && (newItem.Category == "") {
+		return c.Status(400).JSON(fiber.Map{"error": "Title, Description, Price or Category is required"})
+	}
+
+	if newItem.Title != "" {
+		item.Title = newItem.Title
+	}
+	if newItem.Description != "" {
+		item.Description = newItem.Description
+	}
+	if newItem.Price != "" {
+		item.Price = newItem.Price
+	}
+	if newItem.Category != "" {
+		item.Category = newItem.Category
+	}
+
+	filter := bson.M{"_id": objectID}
+	update := bson.M{"$set": bson.M{"title": item.Title, "description": item.Description, "price": item.Price, "category": item.Category}}
+
+	_, err = Items.UpdateOne(context.Background(), filter, update)
+
+	if err != nil {
+		return err
+	}
+	return c.Status(200).JSON(fiber.Map{"message": "success"})
+}
+
+func deleteTodo(c *fiber.Ctx) error {
+	id := c.Params("id")
+	objectID, err := primitive.ObjectIDFromHex(id)
+
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid ID"})
+	}
+
+	filter := bson.M{"_id": objectID}
+
+	_, err = Items.DeleteOne(context.Background(), filter)
+
+	if err != nil {
+		return err
+	}
+
+	return c.Status(200).JSON(fiber.Map{"message": "success"})
 }

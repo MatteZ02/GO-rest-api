@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
@@ -48,15 +49,15 @@ func main() {
 
 	fmt.Println("Connected to MongoDB!")
 
-	Items = client.Database("todos").Collection("todos")
+	Items = client.Database("go-mongo").Collection("items")
 
 	app := fiber.New()
 
-	app.Get("/api/todos", getItems)
-	app.Post("api/todos", createItem)
-	app.Get("api/todos/:id", getItem)
-	app.Patch("api/todos/:id", updateItem)
-	app.Delete("api/todos/:id", deleteTodo)
+	app.Get("/api/items", getItems)
+	app.Post("api/items", createItem)
+	app.Get("api/items/:id", getItem)
+	app.Patch("api/items/:id", updateItem)
+	app.Delete("api/items/:id", deleteTodo)
 
 	PORT := os.Getenv("PORT")
 	if PORT == "" {
@@ -82,13 +83,18 @@ func getItems(c *fiber.Ctx) error {
 	filter := bson.M{}
 
 	if category != "" {
-		filter = bson.M{"category.name": category}
+		filter = bson.M{"category": category}
 	}
 
-	options := options.Find()
-	options.SetSort(bson.D{{Key: sortBy, Value: sortOrder}})
+	sort := bson.D{}
 
-	cursor, err := Items.Find(context.Background(), filter, options)
+	if sortOrder == "desc" {
+		sort = bson.D{{Key: sortBy, Value: -1}}
+	} else {
+		sort = bson.D{{Key: sortBy, Value: 1}}
+	}
+
+	cursor, err := Items.Find(context.Background(), filter, options.Find().SetSort(sort))
 	if err != nil {
 		return err
 	}
@@ -143,6 +149,8 @@ func createItem(c *fiber.Ctx) error {
 	if item.Category == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Category is required"})
 	}
+
+	item.CreatedAt = time.Now().GoString()
 
 	insertResult, err := Items.InsertOne(context.Background(), item)
 

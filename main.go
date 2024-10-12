@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -70,6 +71,8 @@ func main() {
 func getItems(c *fiber.Ctx) error {
 	var items []Item
 
+	page := c.Query("page"); if page == "" { page = "1" }
+
 	sortBy := c.Query("sortBy")
 	if sortBy == "" {
 		sortBy = "createdAt"
@@ -86,7 +89,7 @@ func getItems(c *fiber.Ctx) error {
 		filter = bson.M{"category": category}
 	}
 
-	sort := bson.D{}
+	var sort = bson.D{}
 
 	if sortOrder == "desc" {
 		sort = bson.D{{Key: sortBy, Value: -1}}
@@ -94,7 +97,18 @@ func getItems(c *fiber.Ctx) error {
 		sort = bson.D{{Key: sortBy, Value: 1}}
 	}
 
-	cursor, err := Items.Find(context.Background(), filter, options.Find().SetSort(sort))
+	pageInt, err := strconv.Atoi(page)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid page number"})
+	}
+
+	limit := int64(10 * pageInt)
+	log.Println(limit)
+
+	cursor, err := Items.Find(context.Background(), filter, &options.FindOptions{
+		Sort: sort,
+		Limit: &limit,
+	})
 	if err != nil {
 		return err
 	}
